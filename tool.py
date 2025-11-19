@@ -1,253 +1,280 @@
 # =====================================================
-# 単位管理ツール（進級／卒業選択対応＋B0→B1余剰単位対応）
-# -----------------------------------------------------
-# 機能一覧：
-# ① 起動時に「進級(p)」か「卒業(g)」を選択
-# ② 対応する requirements ファイルを自動で使用
-# ③ 講義リストから取得済み科目を番号で選択
-# ④ 結果を区分ごとに出力（残り単位も表示）
-# ⑤ B0の余剰単位をB1に自動充当
-# ⑥ 学籍番号でデータ保存・上書き確認可能
+# 単ナビ
+# 進級(p): requirements2.txt を使用し、合算要件は  B（専門応用科目）余剰分 + C + E ≥ PROG_BCE_MIN
+# 卒業(g): requirements1.txt を使用し、合算要件は  B（専門応用科目）余剰分 + C + D + E ≥ GRAD_BCDE_MIN
+# ※B（専門応用科目）余剰分 = B1(自分の取得) + B0余剰からの充当 - B1必要分（0未満は0）
 # =====================================================
 
 import os
 
+# ---- 合算要件の基準値 ----
+PROG_BCE_MIN = 11   # 進級: B（専門応用科目）余剰分 + C + E
+GRAD_BCDE_MIN = 17  # 卒業: B（専門応用科目）余剰分 + C + D + E
+
+# 表示名
+DISPLAY = {
+    "A":  "A(必修科目)",
+    "B0": "B（専門基礎科目）",
+    "B1": "B（専門応用科目）",
+    "C":  "C(選択科目)",
+    "D":  "D(特殊選択科目)",
+    "E":  "E(自由科目)",
+}
+def d(cat: str) -> str:
+    return DISPLAY.get(cat, cat)
+
 # -----------------------------------------------------
-# 必要単位を読み込む（requirements1.txt または requirements2.txt）
+# 必要単位の読み込み
 # -----------------------------------------------------
 def read_requirements(filename):
-    """必要単位をファイルから読み込む"""
-    requirements = {}
+    req = {}
     with open(filename, "r", encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) == 2:
-                category, credits = parts
-                requirements[category] = int(credits)
-
-    # 欠けている区分があれば0で補完（B0/B1用）
+                cat, val = parts
+                req[cat] = int(val)
     for k in ["A", "B0", "B1", "C", "D", "E"]:
-        requirements.setdefault(k, 0)
-    return requirements
-
+        req.setdefault(k, 0)
+    return req
 
 # -----------------------------------------------------
-# 講義リストを区分ごとに読み込む（courses.txt）
+# 講義リストの読み込み
 # -----------------------------------------------------
 def read_courses(filename="courses.txt"):
-    """講義リストを区分ごとに読み込む"""
     courses = {}
-    current_cat = None
+    cur = None
     with open(filename, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            line = raw.strip()
             if not line:
                 continue
             if line.startswith("[") and line.endswith("]"):
-                current_cat = line[1:-1]
-                courses[current_cat] = []
+                cur = line[1:-1]
+                courses.setdefault(cur, [])
             else:
                 try:
-                    name, credit = line.rsplit(" ", 1)
-                    courses[current_cat].append((name, int(credit)))
+                    name, cr = line.rsplit(" ", 1)
+                    courses[cur].append((name, int(cr)))
                 except ValueError:
                     continue
-    # 欠けた区分も空リストで補完
     for k in ["A", "B0", "B1", "C", "D", "E"]:
         courses.setdefault(k, [])
     return courses
 
-
 # -----------------------------------------------------
-# 保存済みデータ（taken_学籍番号.txt）を読み取る
+# 保存済み選択データの読み込み
 # -----------------------------------------------------
 def read_user_data(student_id):
-    """保存済みデータを読み取る"""
-    filename = f"taken_{student_id}.txt"
-    earned_courses = {}
-    if not os.path.exists(filename):
+    fn = f"taken_{student_id}.txt"
+    if not os.path.exists(fn):
         return None
-    with open(filename, "r", encoding="utf-8") as f:
+    earned_courses = {}
+    with open(fn, "r", encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) == 3:
-                cat, name, credit = parts
-                earned_courses.setdefault(cat, []).append((name, int(credit)))
+                cat, name, cr = parts
+                earned_courses.setdefault(cat, []).append((name, int(cr)))
     for k in ["A", "B0", "B1", "C", "D", "E"]:
         earned_courses.setdefault(k, [])
     return earned_courses
 
-
 # -----------------------------------------------------
-# 講義を番号で選択させる
+# 取得済み講義の選択
 # -----------------------------------------------------
 def select_courses(courses):
-    """ユーザーが取得済み講義を番号で選択"""
     earned_courses = {cat: [] for cat in courses}
     print("\n=== 取得済み講義を選択してください ===")
     print("複数選ぶときは空白区切りで番号を入力。何も取っていない場合はEnter。")
-
-    for cat, subject_list in courses.items():
-        print(f"\n[{cat}区分]")
-        for i, (name, credit) in enumerate(subject_list, 1):
-            print(f"{i}. {name}（{credit}単位）")
-
+    for cat, lst in courses.items():
+        print(f"\n[{d(cat)}区分]")
+        for i, (name, cr) in enumerate(lst, 1):
+            print(f"{i}. {name}（{cr}単位）")
         nums = input("取得済み講義の番号 → ").split()
         for n in nums:
             try:
                 idx = int(n) - 1
-                if 0 <= idx < len(subject_list):
-                    earned_courses[cat].append(subject_list[idx])
+                if 0 <= idx < len(lst):
+                    earned_courses[cat].append(lst[idx])
             except ValueError:
                 continue
     return earned_courses
 
-
 # -----------------------------------------------------
-# 各区分の取得単位を計算
+# 区分ごとの合計
 # -----------------------------------------------------
 def calculate_credits(earned_courses):
-    """区分ごとの取得単位数を合計"""
-    earned = {cat: sum(credit for _, credit in subjects)
-              for cat, subjects in earned_courses.items()}
+    earned = {cat: sum(cr for _, cr in subs) for cat, subs in earned_courses.items()}
     for k in ["A", "B0", "B1", "C", "D", "E"]:
         earned.setdefault(k, 0)
     return earned
 
-
 # -----------------------------------------------------
-# B0の余剰単位をB1に充当するロジック（友達のロジック）
+# 段階的充当：B(専門基礎科目) → B(専門応用科目) → 合算要件
 # -----------------------------------------------------
-def apply_b0_overflow(required, earned):
+def cascade_allocation(required, earned):
     """
-    B0で必要以上に取得していた単位をB1に加算。
-    例: B0が12単位で要件10なら、余剰2単位をB1に回す。
+    優先順位: B（専門基礎科目） > B（専門応用科目） > 合算要件
+     1) まずB（専門基礎科目）を必要分満たす。超過分は b0_surplus
+     2) B（専門応用科目）は 自身の取得 + b0_surplus で満たす。
+        満たした後の超過が b1_surplus_for_bundle(合算要件に使う)
     """
     need_b0 = required.get("B0", 0)
     need_b1 = required.get("B1", 0)
-    got_b0 = earned.get("B0", 0)
-    got_b1 = earned.get("B1", 0)
+    got_b0  = earned.get("B0", 0)
+    got_b1  = earned.get("B1", 0)
 
-    surplus_b0 = max(0, got_b0 - need_b0)  # 余剰分
-    eff_b1 = got_b1 + surplus_b0           # 実効B1単位
-    remain_b1 = max(0, need_b1 - eff_b1)
+    b0_surplus = max(0, got_b0 - need_b0)
+    b1_after_fill = got_b1 + b0_surplus
+    b1_short = max(0, need_b1 - b1_after_fill)
+    b1_surplus_for_bundle = max(0, b1_after_fill - need_b1)
 
     return {
-        "surplus_b0": surplus_b0,
-        "eff_b1": eff_b1,
-        "remain_b1": remain_b1
+        "need_b0": need_b0,
+        "got_b0": got_b0,
+        "b0_surplus": b0_surplus,
+        "need_b1": need_b1,
+        "got_b1_raw": got_b1,
+        "b1_after_fill": b1_after_fill,
+        "b1_short": b1_short,
+        "b1_surplus_for_bundle": b1_surplus_for_bundle
     }
 
+# -----------------------------------------------------
+# 合算要件の判定（進級/卒業で異なる）
+# -----------------------------------------------------
+def compute_bundle(mode, earned, cas):
+    c = earned.get("C", 0)
+    d = earned.get("D", 0)
+    e = earned.get("E", 0)
+    b1_surplus = cas["b1_surplus_for_bundle"]
+
+    if mode == "p":  # 進級: B（専門応用科目）余剰分 + C + E
+        total = b1_surplus + c + e
+        need  = PROG_BCE_MIN
+        label = "B（専門応用科目）余剰分 + C + E"
+    else:            # 卒業: B（専門応用科目）余剰分 + C + D + E
+        total = b1_surplus + c + d + e
+        need  = GRAD_BCDE_MIN
+        label = "B（専門応用科目）余剰分 + C + D + E"
+
+    ok = total >= need
+    return label, total, need, ok
 
 # -----------------------------------------------------
-# 結果を出力（必要／取得／残り、B0→B1反映）
+# 出力
 # -----------------------------------------------------
-def show_remaining(required, earned, courses, earned_courses, overflow_info):
-    """結果の出力"""
+def show_remaining(required, earned, courses, earned_courses, cas,
+                   bundle_label, bundle_total, bundle_need, bundle_ok):
     print("\n=== 結果 ===")
 
-    # 区分順序を固定して出力
     for cat in ["A", "B0", "B1", "C", "D", "E"]:
         need = required.get(cat, 0)
-        got = earned.get(cat, 0)
+        got  = earned.get(cat, 0)
 
-        # B1だけは余剰B0を反映して表示
-        if cat == "B1":
-            remain = overflow_info["remain_b1"]
-            surplus = overflow_info["surplus_b0"]
-            eff = overflow_info["eff_b1"]
-            print(f"{cat}区分: 必要{need} / 取得{got} "
-                  f"（B0余剰+{surplus} → 実効{eff}） / 残り{remain}")
+        if cat == "B0":
+            remain = max(0, need - got)
+            print(f"{d('B0')}区分: 必要{need} / 取得{got} / 残り{remain} ・ 余剰 {cas['b0_surplus']}")
+
+        elif cat == "B1":
+            if cas["b1_short"] > 0:
+                print(f"{d('B1')}区分: 必要{need} / 取得{got} / {d('B0')}からの充当後 {cas['b1_after_fill']} / 残り{cas['b1_short']}")
+            else:
+                print(f"{d('B1')}区分: 必要{need} / 取得{got} / 残り0 ・ 合算に用いる{d('B1')}余剰 {cas['b1_surplus_for_bundle']}")
+
+        elif cat == "C":
+            print(f"{d('C')}区分: 取得{got}")
+
         else:
             remain = max(0, need - got)
-            print(f"{cat}区分: 必要{need} / 取得{got} / 残り{remain}")
+            print(f"{d(cat)}区分: 必要{need} / 取得{got} / 残り{remain}")
 
-        # 未取得講義も表示
+        # 未取得候補
         if cat in courses:
-            taken_names = {name for name, _ in earned_courses.get(cat, [])}
-            remaining_subjects = [name for name, _ in courses[cat]
-                                  if name not in taken_names]
-            if remaining_subjects:
+            taken = {n for n, _ in earned_courses.get(cat, [])}
+            remaining = [n for n, _ in courses[cat] if n not in taken]
+            if remaining:
                 print("→ まだ取っていない講義：")
-                for name in remaining_subjects:
-                    print(f"   - {name}")
+                for n in remaining:
+                    print(f"   - {n}")
         print()
 
+    # 合算要件
+    print("=== 合算要件の判定 ===")
+    status = "達成" if bundle_ok else "未達成"
+    print(f"{bundle_label}: 合計 {bundle_total} / 基準 {bundle_need} → {status}")
 
 # -----------------------------------------------------
-# データをファイルに保存
+# 保存
 # -----------------------------------------------------
 def save_user_data(student_id, earned_courses):
-    """履修データを保存"""
-    filename = f"taken_{student_id}.txt"
-    with open(filename, "w", encoding="utf-8") as f:
-        for cat, subjects in earned_courses.items():
-            for name, credit in subjects:
-                f.write(f"{cat} {name} {credit}\n")
-
+    fn = f"taken_{student_id}.txt"
+    with open(fn, "w", encoding="utf-8") as f:
+        for cat, subs in earned_courses.items():
+            for name, cr in subs:
+                f.write(f"{cat} {name} {cr}\n")
 
 # -----------------------------------------------------
-# メイン関数（進級/卒業選択＋余剰単位対応）
+# メイン
 # -----------------------------------------------------
 def main():
-    print("=== 単位管理ツール（進級／卒業＋B0→B1余剰単位対応） ===")
+    print("=== 単ナビ ===")
 
-    # ▼ 1. 進級 or 卒業の選択
+    # 進級 or 卒業
     mode = ""
     while mode not in ["p", "g"]:
         mode = input("進級要件(p)か卒業要件(g)かを選んでください： ").strip().lower()
 
     if mode == "p":
         req_file = "requirements2.txt"
-        print("\n→ 進級要件を使用します。")
+        print("\n→ 進級要件を使用します。合算要件: B（専門応用科目）余剰分 + C + E ≥", PROG_BCE_MIN)
     else:
         req_file = "requirements1.txt"
-        print("\n→ 卒業要件を使用します。")
+        print("\n→ 卒業要件を使用します。合算要件: B（専門応用科目）余剰分 + C + D + E ≥", GRAD_BCDE_MIN)
 
-    # ▼ 2. 学籍番号入力
     student_id = input("\n学籍番号を入力してください： ").strip()
 
-    # ▼ 3. データ読み込み
     required = read_requirements(req_file)
-    courses = read_courses()
+    courses  = read_courses()
 
     print("\n--- 必要単位（設定） ---")
     for k in ["A", "B0", "B1", "C", "D", "E"]:
-        print(f"{k}: {required.get(k, 0)}単位")
-    print("※B0の余剰単位は自動的にB1へ充当されます。")
+        print(f"{d(k)}: {required.get(k, 0)}単位")
+    print("※充当の優先順位は B（専門基礎科目） > B（専門応用科目） > 合算要件")
 
-    # ▼ 4. 既存データ確認
-    old_data = read_user_data(student_id)
-    if old_data:
+    # 既存データ
+    old = read_user_data(student_id)
+    if old:
         print(f"\n前回のデータ（taken_{student_id}.txt）が見つかりました。")
-        choice = input("上書きしますか？(y/n)： ").lower()
-        if choice == "n":
-            print("\n前回のデータを読み込みます。")
-            earned = calculate_credits(old_data)
-            overflow_info = apply_b0_overflow(required, earned)
-            show_remaining(required, earned, courses, old_data, overflow_info)
+        if input("上書きしますか？(y/n)： ").strip().lower() == "n":
+            earned = calculate_credits(old)
+            cas = cascade_allocation(required, earned)
+            lab, tot, need, ok = compute_bundle(mode, earned, cas)
+            show_remaining(required, earned, courses, old, cas, lab, tot, need, ok)
             print("\n※変更なしで終了します。")
             return
         else:
             print("\n新しいデータを入力します（前回の記録は上書きされます）。")
 
-    # ▼ 5. 新しいデータ入力
+    # 新規入力
     earned_courses = select_courses(courses)
     earned = calculate_credits(earned_courses)
 
-    # ▼ 6. B0→B1余剰計算
-    overflow_info = apply_b0_overflow(required, earned)
+    # 段階的充当と合算要件
+    cas = cascade_allocation(required, earned)
+    bundle_label, bundle_total, bundle_need, bundle_ok = compute_bundle(mode, earned, cas)
 
-    # ▼ 7. 結果出力
-    show_remaining(required, earned, courses, earned_courses, overflow_info)
+    # 出力
+    show_remaining(required, earned, courses, earned_courses, cas,
+                   bundle_label, bundle_total, bundle_need, bundle_ok)
 
-    # ▼ 8. データ保存
+    # 保存
     save_user_data(student_id, earned_courses)
     print(f"\nデータを保存しました。（taken_{student_id}.txt）")
 
-
-# -----------------------------------------------------
-# 実行エントリーポイント
 # -----------------------------------------------------
 if __name__ == "__main__":
     main()
+
+
