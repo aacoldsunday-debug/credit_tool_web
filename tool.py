@@ -1,15 +1,16 @@
 # =====================================================
 # 単ナビ
-# 進級(p): requirements2.txt を使用し、合算要件は  B（専門応用科目）余剰分 + C + E ≥ PROG_BCE_MIN
-# 卒業(g): requirements1.txt を使用し、合算要件は  B（専門応用科目）余剰分 + C + D + E ≥ GRAD_BCDE_MIN
+# 進級(p): requirements2.txt を使用し、合算要件は  B（専門応用科目）余剰分 + C ≥ PROG_BCE_MIN
+# 卒業(g): requirements1.txt を使用し、合算要件は  B（専門応用科目）余剰分 + C + D ≥ GRAD_BCDE_MIN
 # ※B（専門応用科目）余剰分 = B1(自分の取得) + B0余剰からの充当 - B1必要分（0未満は0）
+#   ※E区分は今回使用しないためロジックから削除
 # =====================================================
 
 import os
 
 # ---- 合算要件の基準値 ----
-PROG_BCE_MIN = 11   # 進級: B（専門応用科目）余剰分 + C + E
-GRAD_BCDE_MIN = 17  # 卒業: B（専門応用科目）余剰分 + C + D + E
+PROG_BCE_MIN = 11   # 進級: B（専門応用科目）余剰分 + C
+GRAD_BCDE_MIN = 17  # 卒業: B（専門応用科目）余剰分 + C + D
 
 # 表示名
 DISPLAY = {
@@ -18,7 +19,7 @@ DISPLAY = {
     "B1": "B（専門応用科目）",
     "C":  "C(選択科目)",
     "D":  "D(特殊選択科目)",
-    "E":  "E(自由科目)",
+    # "E":  "E(自由科目)",  # E区分は使用しない
 }
 def d(cat: str) -> str:
     return DISPLAY.get(cat, cat)
@@ -34,7 +35,8 @@ def read_requirements(filename):
             if len(parts) == 2:
                 cat, val = parts
                 req[cat] = int(val)
-    for k in ["A", "B0", "B1", "C", "D", "E"]:
+    # E区分を除外し、A/B0/B1/C/D のみ補完
+    for k in ["A", "B0", "B1", "C", "D"]:
         req.setdefault(k, 0)
     return req
 
@@ -58,7 +60,8 @@ def read_courses(filename="courses.txt"):
                     courses[cur].append((name, int(cr)))
                 except ValueError:
                     continue
-    for k in ["A", "B0", "B1", "C", "D", "E"]:
+    # E区分は使用しないので A/B0/B1/C/D のみ
+    for k in ["A", "B0", "B1", "C", "D"]:
         courses.setdefault(k, [])
     return courses
 
@@ -76,7 +79,8 @@ def read_user_data(student_id):
             if len(parts) == 3:
                 cat, name, cr = parts
                 earned_courses.setdefault(cat, []).append((name, int(cr)))
-    for k in ["A", "B0", "B1", "C", "D", "E"]:
+    # E区分を除外し、A/B0/B1/C/D のみ
+    for k in ["A", "B0", "B1", "C", "D"]:
         earned_courses.setdefault(k, [])
     return earned_courses
 
@@ -106,7 +110,8 @@ def select_courses(courses):
 # -----------------------------------------------------
 def calculate_credits(earned_courses):
     earned = {cat: sum(cr for _, cr in subs) for cat, subs in earned_courses.items()}
-    for k in ["A", "B0", "B1", "C", "D", "E"]:
+    # E区分なし
+    for k in ["A", "B0", "B1", "C", "D"]:
         earned.setdefault(k, 0)
     return earned
 
@@ -142,22 +147,21 @@ def cascade_allocation(required, earned):
     }
 
 # -----------------------------------------------------
-# 合算要件の判定（進級/卒業で異なる）
+# 合算要件の判定（進級/卒業で異なる）※E区分なし版
 # -----------------------------------------------------
 def compute_bundle(mode, earned, cas):
     c = earned.get("C", 0)
     d = earned.get("D", 0)
-    e = earned.get("E", 0)
     b1_surplus = cas["b1_surplus_for_bundle"]
 
-    if mode == "p":  # 進級: B（専門応用科目）余剰分 + C + E
-        total = b1_surplus + c + e
+    if mode == "p":  # 進級: B（専門応用科目）余剰分 + C
+        total = b1_surplus + c
         need  = PROG_BCE_MIN
-        label = "B（専門応用科目）余剰分 + C + E"
-    else:            # 卒業: B（専門応用科目）余剰分 + C + D + E
-        total = b1_surplus + c + d + e
+        label = "B（専門応用科目）余剰分 + C"
+    else:            # 卒業: B（専門応用科目）余剰分 + C + D
+        total = b1_surplus + c + d
         need  = GRAD_BCDE_MIN
-        label = "B（専門応用科目）余剰分 + C + D + E"
+        label = "B（専門応用科目）余剰分 + C + D"
 
     ok = total >= need
     return label, total, need, ok
@@ -169,7 +173,8 @@ def show_remaining(required, earned, courses, earned_courses, cas,
                    bundle_label, bundle_total, bundle_need, bundle_ok):
     print("\n=== 結果 ===")
 
-    for cat in ["A", "B0", "B1", "C", "D", "E"]:
+    # E区分を除外して A/B0/B1/C/D のみ出力
+    for cat in ["A", "B0", "B1", "C", "D"]:
         need = required.get(cat, 0)
         got  = earned.get(cat, 0)
 
@@ -228,10 +233,10 @@ def main():
 
     if mode == "p":
         req_file = "requirements2.txt"
-        print("\n→ 進級要件を使用します。合算要件: B（専門応用科目）余剰分 + C + E ≥", PROG_BCE_MIN)
+        print("\n→ 進級要件を使用します。合算要件: B（専門応用科目）余剰分 + C ≥", PROG_BCE_MIN)
     else:
         req_file = "requirements1.txt"
-        print("\n→ 卒業要件を使用します。合算要件: B（専門応用科目）余剰分 + C + D + E ≥", GRAD_BCDE_MIN)
+        print("\n→ 卒業要件を使用します。合算要件: B（専門応用科目）余剰分 + C + D ≥", GRAD_BCDE_MIN)
 
     student_id = input("\n学籍番号を入力してください： ").strip()
 
@@ -239,7 +244,7 @@ def main():
     courses  = read_courses()
 
     print("\n--- 必要単位（設定） ---")
-    for k in ["A", "B0", "B1", "C", "D", "E"]:
+    for k in ["A", "B0", "B1", "C", "D"]:
         print(f"{d(k)}: {required.get(k, 0)}単位")
     print("※充当の優先順位は B（専門基礎科目） > B（専門応用科目） > 合算要件")
 
@@ -276,5 +281,3 @@ def main():
 # -----------------------------------------------------
 if __name__ == "__main__":
     main()
-
-
