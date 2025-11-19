@@ -87,9 +87,10 @@ if student_id:
 
 # ------------------------------
 # 取得済みの講義選択
-#   → 保存済み + 今回分をまとめて「編集」できる形にする
+#   - すでに取得した講義 → 取り消したいものを選択して削除できる
+#   - 新規の講義 → これまで通り「まだ取っていない講義」から選ぶ
 # ------------------------------
-st.subheader("取得済み講義を選択してください（チェックを付け外しして編集できます）")
+st.subheader("取得済み講義を選択してください")
 
 earned_courses = {}
 
@@ -102,29 +103,48 @@ for cat in ["A", "B0", "B1", "C", "D"]:
         earned_courses[cat] = []
         continue
 
-    # 選択肢は「その区分の全講義」
-    options = [f"{name}（{credit}単位）" for name, credit in subject_list]
+    # 保存済みの講義名（パスワードOKのときのみ扱う）
+    saved_names = set(loaded_taken.get(cat, [])) if password_ok else set()
 
-    # 前回保存されている講義名（パスワードが通っている場合のみ）
-    taken_names = set(loaded_taken.get(cat, [])) if password_ok else set()
+    # ---------- 1. 保存済みの中から「取り消したい講義」を選ばせる ----------
+    if saved_names:
+        st.caption("すでに保存されている取得講義（取り消したいものがあれば選択）")
+        cancel_selected = st.multiselect(
+            f"{disp(cat)}で取得済みとして登録されている講義（取り消すものを選択）",
+            sorted(saved_names),
+            key=f"cancel_{cat}"
+        )
+        cancel_set = set(cancel_selected)
+    else:
+        cancel_set = set()
 
-    # デフォルトでチェックを入れる項目（＝保存済み分）
-    default_selected = [
+    # 取り消し後に残る「現在も取得済みとして扱う講義」
+    kept_names = saved_names - cancel_set
+
+    # ---------- 2. 新しく取得した講義を選ばせる（候補は「まだ一度も取っていない」もの） ----------
+    st.caption("新たに取得した講義があれば選択してください")
+    options_new = [
         f"{name}（{credit}単位）"
         for name, credit in subject_list
-        if name in taken_names
+        if name not in saved_names  # ← これまで通り「保存済みは候補から外す」
     ]
 
-    selected = st.multiselect(
-        f"{disp(cat)}で取得した講義を選択",
-        options,
-        default=default_selected,
-        key=f"sel_{cat}"
+    selected_new = st.multiselect(
+        f"{disp(cat)}で新たに取得した講義を選択",
+        options_new,
+        key=f"new_{cat}"
     )
 
-    # 「現在チェックが入っているもの」だけを取得済みとして扱う
+    # ---------- 3. 現時点での「取得済み講義」を確定 ----------
     current_taken = []
-    for sel in selected:
+
+    # まず「取り消されなかった保存済み分」
+    for name, credit in subject_list:
+        if name in kept_names:
+            current_taken.append((name, credit))
+
+    # その上に「新しく選ばれた講義」を追加
+    for sel in selected_new:
         name = sel.split("（")[0]
         m = re.search(r"(\d+)", sel)
         credit = int(m.group(1)) if m else 0
@@ -190,3 +210,4 @@ if st.button("結果を表示"):
             st.success(f" データを保存しました！（{filename}）")
         except Exception as e:
             st.error(f"データ保存中にエラーが発生しました: {e}")
+
