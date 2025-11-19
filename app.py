@@ -39,9 +39,9 @@ courses = read_courses("courses.txt")
 # ------------------------------
 # 保存データ読み込み（パスワード付き）
 # ------------------------------
-loaded_taken = {}
-file_has_password = False
-password_ok = False
+loaded_taken = {}          # {区分: [講義名, ...]}
+file_has_password = False  # ファイルにPWD行があるか
+password_ok = False        # 認証が通ったか
 
 if student_id:
     filename = f"taken_{student_id}.txt"
@@ -87,8 +87,9 @@ if student_id:
 
 # ------------------------------
 # 取得済みの講義選択
+#   → 保存済み + 今回分をまとめて「編集」できる形にする
 # ------------------------------
-st.subheader("取得済み講義を選択してください")
+st.subheader("取得済み講義を選択してください（チェックを付け外しして編集できます）")
 
 earned_courses = {}
 
@@ -101,35 +102,35 @@ for cat in ["A", "B0", "B1", "C", "D"]:
         earned_courses[cat] = []
         continue
 
-    # 保存済みの講義名（パスワードOKのときのみ反映）
+    # 選択肢は「その区分の全講義」
+    options = [f"{name}（{credit}単位）" for name, credit in subject_list]
+
+    # 前回保存されている講義名（パスワードが通っている場合のみ）
     taken_names = set(loaded_taken.get(cat, [])) if password_ok else set()
 
-    # 新規選択の候補
-    options = [
+    # デフォルトでチェックを入れる項目（＝保存済み分）
+    default_selected = [
         f"{name}（{credit}単位）"
         for name, credit in subject_list
-        if name not in taken_names
+        if name in taken_names
     ]
 
     selected = st.multiselect(
         f"{disp(cat)}で取得した講義を選択",
         options,
+        default=default_selected,
         key=f"sel_{cat}"
     )
 
-    # まず保存済み分
-    earned_courses[cat] = [
-        (name, credit)
-        for name, credit in subject_list
-        if name in taken_names
-    ]
-
-    # 今回の選択分（単位を文字列から抽出：\d+）
+    # 「現在チェックが入っているもの」だけを取得済みとして扱う
+    current_taken = []
     for sel in selected:
         name = sel.split("（")[0]
         m = re.search(r"(\d+)", sel)
         credit = int(m.group(1)) if m else 0
-        earned_courses[cat].append((name, credit))
+        current_taken.append((name, credit))
+
+    earned_courses[cat] = current_taken
 
 # ------------------------------
 # 結果表示 & 保存
