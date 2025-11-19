@@ -1,82 +1,109 @@
 # =====================================================
-# 単位管理ツール Web版（Streamlit + Supabase 版）
+# 単位管理ツール Web版（Streamlit + Supabase REST版）
 # -----------------------------------------------------
 # 機能：
 # ① 「進級」or「卒業」モードを選択
 # ② courses.txt から取得済み講義をチェックで選択
 # ③ 必要／取得／残り単位を自動計算（B0余剰 → B1充当）
-# ④ 学籍番号 + モードごとに Supabase に保存＆自動読み込み
+# ④ 学籍番号 + モードごとに Supabase(creditsテーブル)へ保存＆自動復元
 # =====================================================
 
 import os
 import json
+import requests
 import streamlit as st
 from tool import read_requirements, read_courses, calculate_credits, apply_b0_overflow
 
-# Supabase 用ライブラリ
-from supabase import create_client, Client
-
 # -----------------------------------------------------
-# Supabase クライアント初期化
+# Supabase REST API 設定
 # -----------------------------------------------------
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")          # 例: https://xxxxx.supabase.co
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # service_role のキー
 
-supabase: Client | None = None
 if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    CREDITS_ENDPOINT = f"{SUPABASE_URL}/rest/v1/credits"
+    BASE_HEADERS = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+else:
+    CREDITS_ENDPOINT = None
+    BASE_HEADERS = {}
 
 
 # -----------------------------------------------------
-# Supabase にデータを保存
+# Supabase にデータ保存（INSERT/UPSERT代わり）
 # -----------------------------------------------------
 def save_user_data_to_supabase(student_id: str, db_mode: str, earned_courses: dict):
     """
-    earned_courses: { "A": [(name, credit), ...], "B0": [...], ... }
-    を JSON に変換して Supabase テーブル "credits" に upsert する
+    earned_courses: { "A": [(name, credit), ...], ... } を
+    JSONにして credits テーブルに保存する。
     """
-    if supabase is None:
-        # Supabase が設定されていない場合は何もしない
+    if not CREDITS_ENDPOINT:
+        # 環境変数が設定されていない場合は何もしない
         return
 
     serializable = {
         cat: [{"name": name, "credit": credit} for name, credit in subjects]
         for cat, subjects in earned_courses.items()
     }
-
     data_json = json.dumps(serializable, ensure_ascii=False)
 
-    # student_id + mode で1レコードとして upsert
-    supabase.table("credits").upsert(
-        {
-            "student_id": student_id,
-            "mode": db_mode,
-            "data_json": data_json,
-        }
-    ).execute()
+    row = {
+        "student_id": student_id,
+        "mode": db_mode,
+        "data_json": data_json,
+    }
+
+    # 同じ student_id + mode があったら上書きしたいので upsert 的に扱う
+    # → on_conflict に複合ユニークキー(student_id,mode)を設定しておくとベスト
+    params = {
+        "on_conflict": "student_id,mode",
+        "return": "representation",
+    }
+
+    resp = requests.post(
+        CREDITS_ENDPOINT,
+        headers={**BASE_HEADERS, "Prefer": "resolution=merge-duplicates"},
+        params=params,
+        json=row,
+        timeout=10,
+    )
+    resp.raise_for_status()
 
 
 # -----------------------------------------------------
-# Supabase からデータを読み込み
+# Supabase からデータ読み込み
 # -----------------------------------------------------
 def load_user_data_from_supabase(student_id: str, db_mode: str):
     """
-    学籍番号 + モードに対応する履修データを Supabase から取得し、
+    学籍番号 + モードに対応する最新の1件を取り出し、
     {cat: [(name, credit), ...]} 形式で返す。なければ None。
     """
-    if supabase is None:
+    if not CREDITS_ENDPOINT:
         return None
 
-    res = supabase.table("credits") \
-        .select("data_json") \
-        .eq("student_id", student_id) \
-        .eq("mode", db_mode) \
-        .execute()
+    params = {
+        "select": "data_json,updated_at",
+        "student_id": f"eq.{student_id}",
+        "mode": f"eq.{db_mode}",
+        "order": "updated_at.desc",
+        "limit": "1",
+    }
 
-    if not res.data:
+    resp = requests.get(
+        CREDITS_ENDPOINT,
+        headers=BASE_HEADERS,
+        params=params,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data:
         return None
 
-    raw = json.loads(res.data[0]["data_json"])
+    raw = json.loads(data[0]["data_json"])
     earned_courses = {
         cat: [(item["name"], item["credit"]) for item in items]
         for cat, items in raw.items()
@@ -88,49 +115,43 @@ def load_user_data_from_supabase(student_id: str, db_mode: str):
 # Streamlit アプリ本体
 # =====================================================
 
-# タイトル
 st.title("🎓 単位管理ツール Web版")
 
 # 進級／卒業モード選択
 mode = st.radio("判定モードを選択してください", ("進級", "卒業"))
-# DB に保存するときは英語で統一
+# DB保存用の内部モード名
 db_mode = "progress" if mode == "進級" else "graduate"
 req_file = "requirements2.txt" if mode == "進級" else "requirements1.txt"
 
-# 学籍番号入力
+# 学籍番号
 student_id = st.text_input("学籍番号を入力してください（例: t24b123）")
 
-# 必要単位・講義リスト読み込み
+# 必要単位・講義リスト
 required = read_requirements(req_file)
 courses = read_courses()
 
 st.markdown("---")
 
 # -----------------------------------------------------
-# 前回データの自動読み込み（あれば）
+# 前回データ読み込み（自動）
 # -----------------------------------------------------
 loaded_earned_courses = None
-load_message = ""
-
 if student_id:
     try:
         loaded_earned_courses = load_user_data_from_supabase(student_id, db_mode)
         if loaded_earned_courses:
-            load_message = "✅ 前回保存されたデータを読み込みました。"
+            st.info("✅ 前回保存されたデータを読み込みました。")
         else:
-            load_message = "ℹ️ 前回データは見つかりませんでした。新規入力として扱います。"
+            st.info("ℹ️ 前回データは見つかりませんでした。新規入力として扱います。")
     except Exception as e:
-        load_message = f"⚠️ データ読み込み中にエラーが発生しました: {e}"
-
-if load_message:
-    st.info(load_message)
+        st.warning(f"データ読み込み中にエラーが発生しました: {e}")
 
 # -----------------------------------------------------
 # 講義選択フォーム
 # -----------------------------------------------------
 st.header("📘 取得済み講義を選択してください")
 
-earned_courses: dict[str, list[tuple[str, int]]] = {}
+earned_courses = {}
 
 for cat, subject_list in courses.items():
     st.subheader(f"【{cat}区分】")
@@ -142,7 +163,7 @@ for cat, subject_list in courses.items():
 
     options = [name for name, _ in subject_list]
 
-    # 前回データがあれば、その講義名を初期選択状態にする
+    # 前回データがあれば初期選択として反映
     default_selected = []
     if loaded_earned_courses and cat in loaded_earned_courses:
         default_selected = [name for name, _ in loaded_earned_courses[cat]]
@@ -165,7 +186,6 @@ if st.button("結果を表示"):
     if not student_id:
         st.error("学籍番号を入力してください。")
     else:
-        # 各区分の取得単位を集計
         earned = calculate_credits(earned_courses)
         overflow = apply_b0_overflow(required, earned)
 
@@ -197,7 +217,6 @@ if st.button("結果を表示"):
                 )
 
         st.markdown("---")
-
         total_required = sum(required.values())
         total_earned = sum(earned.values())
         st.subheader(f"📈 総取得単位数： {total_earned} / {total_required}")
